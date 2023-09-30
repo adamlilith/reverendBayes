@@ -14,6 +14,8 @@ knitr::opts_chunk$set(echo = TRUE)
 
 This tutorial walks you through how to do a simple  Bayesian linear regression using the **`nimble`** package for **R**. linear regression using the nimble package for R. It also explores basic model diagnostics. We’ll try to estimate the “true” values we use to generate the data using simple linear regression. We will also explores basic model diagnostics. 
 
+Note that there is an [online manual](https://r-nimble.org/html_manual/cha-welcome-nimble.html) for `nimble`. The [main webpage](https://r-nimble.org/) for `nimmble` also links to a host of useful infrmation.
+
 ## Setup
 ```{r, }
 library(nimble) # the workhorse
@@ -28,10 +30,24 @@ x <- rnorm(N) # predictor
 beta0 <- 1 # intercept
 beta1 <- 1.2 # slope
 sigma <- 0.8 # variation around trendline
-y <- beta0 + beta1 * x + rnorm(N, 0, sigma)
+
+noise <- rnorm(N, mean = 0, sd = sigma)
+y <- beta0 + beta1 * x + noise
 
 plot(x, y)
 ```
+
+## Rescaling predictors
+MCMC and other apgorithms often suffer issues when predictors have distributions that vary widely. For example, total annual precipitation varies 0 to 7000 mm across the lower 48 US States, whereas mean annual temperature only varies from about -12 to 28 deg C. Precipitation has a much wider range than temperature, and this can cause issues if a model were to be used to find, say, a relationship between temperature, precipitation, and primary productivity.
+
+To obviate tehse issues, we center and scale the predictors by subtracting their means and dividing by their standard deviations. This can be done quickly in **`R`** using the `scale()` function:
+
+```{r}
+x <- scale(x) # output is a 1-column matrix
+x <- c(x) # convert back to a vector
+```
+
+Note that if we want to plot the model estimates against the original values of the predictors, we may need to unscale the predictors first.
 
 ## Organize data into formats needed by `nimble`
 Data is supplied to `nimble` using `lists`:
@@ -137,6 +153,8 @@ code <- nimbleCode({
 ```
 
 ## Process the model code
+The [nimble manual](https://r-nimble.org/html_manual/cha-welcome-nimble.html) describes an easy, "one-line MCMC" function. We will not use that here because as you become an advanced Bayesian modeler, there are parts of the model setup that you will want to modify. The one-line function doesn't allow that easily.
+
 This step checks the code for errors and does other arcane things. Note that this is where we supply the three lists we created.
 
 ```{r}
