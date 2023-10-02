@@ -56,7 +56,7 @@ Data is supplied to `nimble` using `lists`:
 
 * "Constants" list: This list has values that do not change. For example, the number of data points or number of statistical groups is a constant. It can also include predictor variables (which are assumed to be "fixed".) However, in some models, even the predictors are assumed to have error, so have distributions and therefore should go into the "data" list.
 
-* "Initialization" list: This list is optional, but **`nimble`** works much more reliably if you provide some initial starting values for each parameter.
+* "Initialization" list: This list is optional, but **`nimble`** works much more reliably if you provide some initial starting values for each parameter. Initialization values should chosen so that they are plausible values. Otherwise, the MCMC sampler could get stuck in the wrong part of parameter space. One way to choose good examples is to use a frequentist model to estimate values (e.g., we could use `lm()` to get goo starting values for the slope, intercept, and standard deviation). Typically, the frequentist model will be simpler than the Bayesian model (e.g., it might ignore sampling error).
 
 ```{r}
 data <- list(y = y)
@@ -74,7 +74,7 @@ inits <- list(
 )
 ```
 
-In the equations below, we'll be using the variables `beta0_hat`, `beta1_hat`, and `sigma_hat` to distingish them from the values we defined to simulate "reality" in the steps above.
+In the equations below, we'll be using the variables `beta0_hat`, `beta1_hat`, and `sigma_hat` to distinguish them from the values we defined to simulate "reality" in the steps above.
 
 ## What we're about to do
 You are supremely familiar with the slope-intercept formula for a line:
@@ -135,14 +135,15 @@ code <- nimbleCode({
 	# likelihood of each datum
 	for (i in 1:N) {
 
-		y[i] ~ dnorm(y_mean[i], sigma_hat)
+		# note the "sd = " part... if we leave that out, dnorm() uses tau (1 / sd)
+		y[i] ~ dnorm(y_mean[i], sd = sigma_hat)
 		y_mean[i] <- beta0_hat + beta1_hat * x[i]
 
 	}
 
 	# likelihoods of priors
 	# beta0_hat and beta1_hat: "broad" normals
-	#    important: use argument "sd"... don't leave as blank!
+	#    important: use argument "sd = "
 	# sigma_hat: uniform >0 (after Gelman 2006 Bayesian Analysis)
 
 	beta0_hat ~ dnorm(0, sd = 10)
@@ -225,10 +226,10 @@ The last step is running the MCMC sampler using `runMCMC()`. This actually "impl
 ```{r}
 chains <- runMCMC(
 	compiled$build,
-	niter = 1100,
-	nburnin = 100,
-	thin = 1,
-	nchains = 4,
+	niter = 1100, # iterations
+	nburnin = 100, # burn-in
+	thin = 1, # thinning rate
+	nchains = 4, # numbe of chains
 	inits = inits, # initialization values
 	progressBar = TRUE,
 	samplesAsCodaMCMC = TRUE, # for using coda packagge for plots
@@ -259,7 +260,7 @@ beta1
 sigma
 ```
 
-When I ran my model, I got good estimates of `beta0` and `beta1`, but the real value of `sigma`, `r sigma`, was outside the estimated 95% CI. I could improve this by, for example, increasing the number of MCMC iterations, using a different prior for `sigma_hat`, or changing the sampler.
+You will get slightly different estimates because of the random nature of MCMC.
 
 # Model diagnostics
 
@@ -272,14 +273,14 @@ Before we look at the parameter estimates, we should see how well the MCMC sampl
 mcmc_trace(chains$samples)
 ```
 
-These chains look fairly good. But (at least on my case), you can see the one for `sigma_hat` looks a little different than the ones for the `beta`s. Peering at it, you can see that the chains mix a bit more slowly. This indicates that the coefficient estimates in each chain are highly correlated with values immediately preceeding them. The chain is mixing more slowly as a result. The problem with this is that the chain can linger is a particular part of parameter space for too long of a time, providing biased estimates of parameters.
+These chains look fairly good. But (at least on my case), you can see the one for `sigma_hat` looks a little different than the ones for the `beta`s. Peering at it, you can see that the chains mix a bit more slowly. This indicates that the coefficient estimates in each chain are highly correlated with values immediately preceding them. The chain is mixing more slowly as a result. The problem with this is that the chain can linger is a particular part of parameter space for too long of a time, providing biased estimates of parameters.
 
 This issue is better highlighted using the `mcmc_trace_highlight()` method of plotting chains.
 ```{r, fig.width=7.5}
 mcmc_trace_highlight(chains$samples, highlight =1)
 ```
 
-This graph highlights estimates from chain 1 versus the other chains. You can readily see that this chain looks less well-mixed for `sigma_hat` compared to the `beta`s. The same holds for the other chains (not shown--but you can show yourself!).
+This graph highlights estimates from chain 1 versus the other chains. You can readily see that this chain looks less well-mixed for `sigma_hat` compared to the `beta`s. The same holds for the other chains (not shown--but you can show yourself!). In this case, the `sigma_hat` chains are mixing slower, but they are still mixing well enough for a good estimate given how many samples we're taking (1000 iterations).
 
 When you have a lot of coefficients, examining their trace plots can be tedious (and subjective). Alternatively, you can calculate the "Gelman-Rubin" statistic, which is also called $\hat{R}$ ("R-hat"). $\hat{R}$ measures the ratio of variation among the chains. It's ideal value for a well-mixed model is 1, an in practice, values of <1.1 are acceptible. The $\hat{R}$ statistic is almost always reported in publications using MCMC.
 
@@ -287,13 +288,23 @@ When you have a lot of coefficients, examining their trace plots can be tedious 
 gelman.diag(chains$samples)
 ```
 
-In my case, the $\hat{R}$ values are all very close to 1, suggesting that the chains mixed well. This is a little surprising given what we've seen, but it underscores the fact that relying on just one diagnostic metric may be unreliable. Part of the "problem" is that $\hat{R}$ measures how far apart the chains started from where they ended up. We started with the same initialization values for each chain, and they were not too far from their end values, so the $\hat{R}$ statistic was "doomed" to be close to 1.
+In my case, the $\hat{R}$ values are all very close to 1, suggesting that the chains mixed well. This may be a little surprising given what we've seen, but it suggests that the `sigma_hat` chains were still mixing adequately. $\hat{R}$ measures how far apart the chains started from where they ended up.
 
-So, in retrospect, we should have chosen different initialization values for each chain. However, I'd advise against selecting widly different (implausible) values... it can cause chains to "run off" from the pack, leaving your model even more unstable. This would be evident if one of the chains in the traceplot wandered off on its own.
+Each chain should provide an independent estimate of coefficients. If you see that a chain has a wildly different density, there may be something amiss. You can often fix this by:
 
-Each chain should provide an independent estimate of coefficients. If you see that a chain has a wildly different density, there may be something amiss. You can often fix this by running the model again (it's stochastic, after all!), using different initialization values, or running it for more iterations. If failure to mix is persistent, you may have a dimensionality/identifability issue and so need to reformulate your model (i.e., maybe use fewer coefficients or reduce correlation between predictors).
+* Running the model again (it's stochastic, after all!);
 
-Back in reality, we would probably want to run our model again for more iterations to stabilize parameter estimates. But we'll continue with this model for expediency.
+* Using different initialization values;
+
+* Changing the samplers (using the `configureMCMC()` function, above);
+
+* Running the model for more iterations (plus maybe changing the thinning rate so you don't fill up on memory); and/or
+
+* Changing the underlying model components (e.g., different distributions, especially favoring those that use conjugacy; use less-vague priors).
+
+Note that in the limit of infinite samples, every MCMC chain should gravitate to the "true" posterior distribution (fix #1, above), and that some of the other fixes may actually make the run slower... so brute force may be in order. This means you may need to run your model for a few days/weeks.
+
+If failure to mix is persistent, you may have a dimensionality/identifability issue and so need to reformulate your model (i.e., maybe use fewer coefficients or reduce correlation between predictors).
 
 ## Parameter estimates
 Let's examine the posterior estimates of our model coefficients.
@@ -311,9 +322,9 @@ truth <- c(beta0, beta1, sigma)
 mcmc_recover_intervals(chains$samples, true = truth, point_est = 'mean')
 ```
 
-Here, thick part of each line represents the inner 50%CI, and the thin part the inner 90% CI. Circles represent the mean across the posterior. You can see In my case, we're OK at estimating `beta0`, very good at estimating `beta1`, and poor at `sigma`.
+Here, thick part of each line represents the inner 50%CI, and the thin part the inner 90% CI. Circles represent the mean across the posterior. Our estimates are not exactly spot-on… but recall that we used a random number generator to create the data, and so the real values of the coefficients are not exactly what we set them to be.
 
-Finally, we can efficiently exmaine trace plots and posterior densities using "combo" plots:
+Finally, we can efficiently examine trace plots and posterior densities using "combo" plots:
 
 ```{r, fig.width=7.5}
 mcmc_combo(chains$samples)
@@ -327,6 +338,6 @@ coefficients(model)
 sigma(model)
 ```
 
-Note that the estimates for the `beta`s are nearly the same, and that it got `sigma` correct! It also finishes faster. Later, we will see how Bayesian models can be better than "standard" frequentist models when data and models are complex.  However, please keep in mind that life is too short to always be Bayesian.
+Note that the estimates for the `beta`s and `sigma` are nearly the same! It also finishes faster. Later, we will see how Bayesian models can be better than "standard" frequentist models when data and models are complex.  However, please keep in mind that life is too short to always be Bayesian.
 
 *Finis!*
