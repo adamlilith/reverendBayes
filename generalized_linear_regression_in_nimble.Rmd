@@ -12,7 +12,7 @@ knitr::opts_chunk$set(echo = TRUE)
 .libPaths('C:/ecology/Drive/R/libraries') # for Adam's computer only
 ```
 
-This tutorial walks you through how to do generalized linear regression. Specifically, we will explore logistic regression (where the response is 1s and 0s). We'll use simulated data for which we know the "true" answers.  We'll also compare a "correct" model that uses the form of the function we used to generate the data, and an "incorrect" model that uses a spurious, extra term.
+This tutorial walks you through how to do generalized linear regression. Specifically, we will explore logistic regression (where the response is 1s and 0s). We'll use simulated data for which we know the "true" answers.
 
 Again, the [online manual](https://r-nimble.org/html_manual/cha-welcome-nimble.html) for `nimble` is very useful. The [main webpage](https://r-nimble.org/) for `nimble` also links to a host of useful information.
 
@@ -79,16 +79,9 @@ constants <- list(
 )
 
 # two sets of initialization values, one for correct and one for incorrect model
-inits_correct <- list(
+inits <- list(
 	beta0_hat = 0,
 	beta1_hat = 0,
-	y_est = ybinary
-)
-
-inits_incorrect <- list(
-	beta0_hat = 0,
-	beta1_hat = 0,
-	beta2_hat = -1,
 	y_est = ybinary
 )
 ```
@@ -126,14 +119,10 @@ Note that:
 NIMBLE has functions for the Bernoulli distribution and for the logit transform.
 
 ## Writing the `nimble` model
-In addition to specifying our model, we will also ask NIMBLE to do a little extra, interesting work to help us assess which of our models is the correct one. Let's say we want to find the mean value of `ybinary`. This is easy to do using `mean(ybinary)`, but let's say we want to calculate the mean of the values of `ybinary` that NIMBLE *thinks* the values should be, based on its model of `ybinary`. We can then compare `mean(ybinary)` with NIMBLE's estimate of the mean of `ybinary`.
-
-This is a kind of check we can do to see if we correctly specified the model. There are much more sophisticated ways of doing this (e.g., simulating all the `ybinary`s).
-
-Below, the first model is "correct" because it says that the relationship between `y` (untransformed) is just a linear function of `x`. The second one is incorrect, because it adds a squared term which we did not include when we generated the data.
+In addition to specifying our model, we will also ask NIMBLE to do a little extra, interesting work. Let's say we want to find the mean value of `ybinary`. This is easy to do using `mean(ybinary)`, but let's also say we want to calculate the mean of the values of `ybinary` that NIMBLE *thinks* the values should be, based on its model of `ybinary`. We can then compare `mean(ybinary)` with NIMBLE's estimate of the mean of `ybinary`.
 
 ```{r}
-code_correct <- nimbleCode({
+code <- nimbleCode({
 
 	# likelihood of each datum
 	for (i in 1:N) {
@@ -159,32 +148,6 @@ code_correct <- nimbleCode({
     y_est_mean <- mean(y_est[1:N])
 
 })
-
-code_incorrect <- nimbleCode({
-
-    # likelihood of each datum
-    for (i in 1:N) {
-        # note the "sd = " part!
-        ybinary[i] ~ dbern(psi[i])
-        logit(psi[i]) <- beta0_hat + beta1_hat * x_scaled[i] + beta2_hat * (x_scaled[i])^2
-    }
-
-    # likelihoods of priors
-    # beta0_hat and beta1_hat: "broad" normals
-    # sigma_hat: uniform >0 (after Gelman 2006 Bayesian Analysis)
-
-    beta0_hat ~ dnorm(0, sd = 10)
-    beta1_hat ~ dnorm(0, sd = 10)
-    beta2_hat ~ dnorm(0, sd = 10)
-
-	# simulate the data and calculate an auxillary variable
-	# this does not affect the likelihood
-	for (j in 1:N) {
-		y_est[j] ~ dbern(psi[j])
-	}
-    y_est_mean <- mean(y_est[1:N])
-
-})
 ```
 
 ## Process the model code
@@ -192,32 +155,18 @@ First, check the code for errors and do some other arcane things.
 
 ```{r}
 # correct model
-model_correct <- nimbleModel(
-	code = code_correct, # our model
+model <- nimbleModel(
+	code = code, # our model
 	constants = constants, # constants
 	data = data, # data
-	inits = inits_correct, # initialization values
+	inits = inits, # initialization values
 	check = TRUE, # any errors?
 	calculate = FALSE
 )
 
-model_correct$initializeInfo()
+model$initializeInfo()
 
-model_correct$calculate()
-
-# incorrect model
-model_incorrect <- nimbleModel(
-	code = code_incorrect, # our model
-	constants = constants, # constants
-	data = data, # data
-	inits = inits_incorrect, # initialization values
-	check = TRUE, # any errors?
-	calculate = FALSE
-)
-
-model_incorrect$initializeInfo()
-
-model_incorrect$calculate()
+model$calculate()
 ```
 
 Note that the starting log-likelihood (given the initialization values we used) is smaller for the incorrect model, which is telling.
@@ -226,21 +175,11 @@ We now create an MCMC "configuration" for the model. We also need to tell it wha
 
 ```{r}
 # corect model
-monitors_correct <- c('beta0_hat', 'beta1_hat', 'y_est_mean')
+monitors <- c('beta0_hat', 'beta1_hat', 'y_est_mean')
 
-conf_correct <- configureMCMC(
-	model_correct,
-	monitors = monitors_correct,
-	print = TRUE,
-	enableWAIC = FALSE # Watanabe's AIC
-)
-
-# incorrect model
-monitors_incorrect <- c('beta0_hat', 'beta1_hat', 'beta2_hat', 'y_est_mean')
-
-conf_incorrect <- configureMCMC(
-	model_incorrect,
-	monitors = monitors_incorrect,
+conf <- configureMCMC(
+	model,
+	monitors = monitors,
 	print = TRUE,
 	enableWAIC = FALSE # Watanabe's AIC
 )
@@ -249,37 +188,20 @@ conf_incorrect <- configureMCMC(
 Lastly, we "build" and compile the model.
 
 ```{r}
-build_correct <- buildMCMC(conf_correct)
-build_incorrect <- buildMCMC(conf_incorrect)
-
-compiled_correct <- compileNimble(model_correct, build_correct)
-compiled_incorrect <- compileNimble(model_incorrect, build_incorrect)
+build <- buildMCMC(conf)
+compiled <- compileNimble(model, build)
 ```
 
 ## Run the MCMC sampler!
 
 ```{r}
-chains_correct <- runMCMC(
-	compiled_correct$build,
+chains <- runMCMC(
+	compiled$build,
 	niter = 1100, # iterations
 	nburnin = 100, # burn-in
 	thin = 1, # thinning rate
 	nchains = 4, # number of chains
-	inits = inits_correct, # initialization values
-	progressBar = TRUE,
-	samplesAsCodaMCMC = TRUE, # for using coda package for plots
-	summary = TRUE, # calculate summaries across chains
-	WAIC = FALSE, # Watanabe's AIC
-	perChainWAIC = FALSE
-)
-
-chains_incorrect <- runMCMC(
-	compiled_incorrect$build,
-	niter = 1100, # iterations
-	nburnin = 100, # burn-in
-	thin = 1, # thinning rate
-	nchains = 4, # number of chains
-	inits = inits_incorrect, # initialization values
+	inits = inits, # initialization values
 	progressBar = TRUE,
 	samplesAsCodaMCMC = TRUE, # for using coda package for plots
 	summary = TRUE, # calculate summaries across chains
@@ -291,8 +213,7 @@ chains_incorrect <- runMCMC(
 # Examine output
 Let's look at the summary of our estimates:
 ```{r}
-chains_correct$summary$all.chains
-chains_incorrect$summary$all.chains
+chains$summary$all.chains
 
 # correct values
 c(beta0 = beta0, beta1 = beta1, y_mean = mean(y))
@@ -305,8 +226,7 @@ These are our estimates for the parameters of interest.
 ## Chain convergence
 First, calculate the the Gelman-Rubin diagnostic values for assessing convergence of our chains:
 ```{r}
-gelman.diag(chains_correct$samples)
-gelman.diag(chains_incorrect$samples)
+gelman.diag(chains$samples)
 ```
 
 In my run, these are all <1.1 so look OK.
@@ -315,19 +235,10 @@ In my run, these are all <1.1 so look OK.
 
 Now, let's confirm what we saw in the G-R values by examining the trace plots and parameter estimates, first for the correct model.
 ```{r, fig.width=7.5}
-mcmc_combo(chains_correct$samples)
+mcmc_combo(chains$samples)
 ```
 
-Compare these to the incorrect model.
-```{r, fig.width=7.5}
-mcmc_combo(chains_incorrect$samples)
-```
-
-You can probably see that the chain estimates for the incorrect model seem less well-mixed than those for the correct model. This isn't necessarily a tell-tale sign of model misspecification. The incorrect model is more complex, so it is likely to take more time to mix sufficiently.
-
-What about parameter estimates? They distributions are really very similar, and there's no clear winner. Our simulated version of `ybinary`, and its mean, also does not indicate which model is the correct one because both do a good job of recreating the data. Part of the reason is because the squared term (the `beta2_hat` coefficient) in the incorrect model was correctly estimated to be ~0, on average. Thus, it had little effect on simulated values of `ybinary`.
-
-All the same, we get very equally-performing models. Given that, based on the principle of parsimony, we should probably use the simpler model.
+The chains look well-mixed in the trace plots (rihgt column), but the "lumpy" appearance of the posterior (the plots on the left) suggests that we should probably run the model for more iterations. But we'll live with this for now.
 
 ### The easier way
 Note that we could have gotten a logistic regression simply by using `glm()` to do a "standard" generalized linear regression:
