@@ -140,7 +140,7 @@ code <- nimbleCode({
 	beta0_hat ~ dnorm(0, sd = 10)
 	beta1_hat ~ dnorm(0, sd = 10)
 
-	# simulate the data and calculate an auxillary variable
+	# simulate the data and calculate an auxiliary variable
 	# this does not affect the likelihood
 	for (j in 1:N) {
 		y_est[j] ~ dbern(psi[j])
@@ -174,7 +174,7 @@ Note that the starting log-likelihood (given the initialization values we used) 
 We now create an MCMC "configuration" for the model. We also need to tell it what variables to keep track of.
 
 ```{r}
-# corect model
+# correct model
 monitors <- c('beta0_hat', 'beta1_hat', 'y_est_mean')
 
 conf <- configureMCMC(
@@ -238,7 +238,7 @@ Now, let's confirm what we saw in the G-R values by examining the trace plots an
 mcmc_combo(chains$samples)
 ```
 
-The chains look well-mixed in the trace plots (rihgt column), but the "lumpy" appearance of the posterior (the plots on the left) suggests that we should probably run the model for more iterations. But we'll live with this for now.
+The chains look well-mixed in the trace plots (right column), but the "lumpy" appearance of the posterior (the plots on the left) suggests that we should probably run the model for more iterations. But we'll live with this for now.
 
 ### The easier way
 Note that we could have gotten a logistic regression simply by using `glm()` to do a "standard" generalized linear regression:
