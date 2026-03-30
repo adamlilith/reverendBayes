@@ -3,13 +3,14 @@ title: "Generalized Linear Regression in NIMBLE"
 author: "Adam B. Smith"
 date: "`r Sys.Date()`"
 output:
-  html_document: default
-  word_document: default
+  html_notebook:
+    toc: true
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-.libPaths('C:/ecology/Drive/R/libraries') # for Adam's computer only
+# .libPaths('C:/ecology/Drive/R/libraries') # for Adam's computer only
+.libPaths('E:/Adam/Drive/R/libraries') # for Adam's computer only
 ```
 
 This tutorial walks you through how to do generalized linear regression. Specifically, we will explore logistic regression (where the response is 1s and 0s). We'll use simulated data for which we know the "true" answers.

@@ -1,0 +1,65 @@
+---
+title: "Zero-Inflated Probability Mass Function Models"
+author: "Adam B. Smith"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+.libPaths('C:/ecology/Drive/R/libraries') # for Adam's computer only
+```
+Quite often we encounter data where there are many zeros, but wherere there are not, the values are quite high and not near zero. We call this case "zero-inflation". For example, abundance of an organism across sites often follows a zero-inflated distribution, where many sites are absent of the species, but where the species occurs, its abundance can be quite high.
+
+There are generally three ways to address zero-inflation. First, we can ignore it, but this usually ends badly, as the mean of the values is not close to zero owing to the few cases with large values.
+
+Second, we could use a "hurdle" model, which is actually two seperate models. The first models presence/absence of the entity of interest (e.g., a species), and the second then models the abundance in sites where the entity is predicted to be present.  The disadvantage of this is that it is more complicated to bring in the uncertainty from the binary model into the abundance model.
+
+Third, we can take a Bayesian approach (one of the places where Bayes starts to shine above frequentist methods) and model the zero-inflation and abundance distributions simultaneously. Here, we will explore a zero-inflated Poisson model (ZIP), where there are many zeros, but where there are not, values follow a Poisson distribution.
+
+## Setup
+We first atttach the `nimble` package and helper packages.
+```{r}
+library(nimble) # the workhorse
+library(coda) # for model diagnostics
+library(bayesplot) # for graphing
+```
+
+Next, we generate some zero-inflated count data. Importantly, the counts are integers. The Poisson distribution is for integer data >= 0, so our choice of a Poisson in the model will be appropriate. We will assume that the expected (mean) count at a site is a function of variable `x`. This mean count will be an exponential function of `x` because we need the expected value of the Poisson to be > 0.
+
+We also need to specify which sites will be "zero" sites. We will suppose that 
+
+```{r}
+n <- 200
+x <- seq(-1, 1, length.out = n) # values of x
+w <- runif(n, -1, 1) # values of w
+
+
+b0 <- -0.3
+b1 <- 1.7
+
+a0 <- 0.1
+a1 <- -0.8
+
+lambda <- exp(1.3 * x)
+gamma <- logit(a0 + a1 * w)
+y <- rpois(n, lambda)
+
+hist(y_obs)
+```
+
+
+```{r}
+
+log(lambda) <- b0_hat + b1_hat * x
+logit(gamma) <- a0_hat + a1_hat * w
+ind_hat <- dbern(gamma)
+y_obs[i] ~ dpois(ind_hat * lambda)
+
+
+
+```
+
+

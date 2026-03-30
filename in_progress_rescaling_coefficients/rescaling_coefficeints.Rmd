@@ -1,0 +1,143 @@
+---
+title: "Rescaling coefficents"
+author: "Adam B. Smith"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# .libPaths('C:/ecology/Drive/R/libraries') # for Adam's computer only
+.libPaths('C:/Subarashi/R/libraries') # for Adam's computer only
+```
+
+Sometimes when we integrate data we have two sets of responses matched with predictors that are assumed to be the same but measured or estimated on different scales. For example, we might have occurrence data for a species, which we match with rasterized climate data, and demographic data for that same species matched with site-level measurements of air temperature. If we are interested in combining these data to estimate the species' response to temperature, we will have to think carefully about how locally-measured temperatrure relates to rasterized temperature reconstructions. In this particular example, we would ideally use the transfer-scaling function that was used to generate the rasterized data from weather station data, but in reality, we may not know that.  So, we might make the assumption (and acknowledge it overtly!) that the two sets of temperatures are "the same" in the sense that we can use both to estimate the same coefficeint (i.e., the species' response to temperature).
+
+The difficulty with this approach is that the two temperature data sets may be on different scales. By this, I do *not* mean that one is measured in Fahrenheit and on in Celcius, say, which is a simple transofrmation. Recall that it is often advisable to scale predictor values by subtracting from each value the mean and dividing by their standard deviation. In this case, if we scaled each temperature data set by its own mean and standard deviation, we could get two differentyl-scaled sets of values that are not necessarily comparable (i.e., a value of 0 in one does not correspond to a value of 0 in the other).
+
+What should we do in this case? The easy solution is to scale them both simulatenously--i.e., take the grand mean and standard deviation to use for the scaling operation. However, if one data set is much larger (e.g., the occurrence data set in our example), this may mean that the scaling severely displaces the other, smaller data set relative to the overall set of values.
+
+Consider this hypothetical example. Assume we have 1000 estimates of tempertaure in data set `t1` and just 20 in data set `t2`. The mean value of temperature in `t2` is about 10 degrees greater than the mean of `t1`.  Also, the variance of `t2` is smaller.
+```{r example_data_creation}
+# setup
+library(ggplot2) # plotting
+library(patchwork) # combining ggplots
+set.seed(1)
+
+# sample sizes
+n1 <- 1000
+n2 <- 20
+
+# means and standard deviations
+mu1 <- 12
+mu2 <- 12 + 10
+
+sigma1 <- 10
+sigma2 <- 8
+
+t1 <- rnorm(n1, mu1, sigma1)
+t2 <- rnorm(n2, mu2, sigma2)
+
+combined <- data.frame(
+	set = c(rep('t1', n1), rep('t2', n2)),
+	temperature = c(t1, t2)
+)
+
+ggplot(combined, aes(x = temperature, fill = set)) +
+	geom_histogram(binwidth = 2)
+```
+
+To illustrate the problem, let's scale these values by their oveall means and standard deviations, then by their seperate means and standard deviations.
+```{r example_scale}
+# scale by overall mu and sigma
+combined$temperature_combined <- scale(combined$temperature)
+
+# scale by individual mu and sigma
+combined$temperature_individual <- NA_real_
+combined$temperature_individual[combined$set == 't1'] <- scale(combined$temperature[combined$set == 't1'])
+combined$temperature_individual[combined$set == 't2'] <- scale(combined$temperature[combined$set == 't2'])
+
+combo_scale <- ggplot(combined, aes(x = temperature_combined, fill = set)) +
+	geom_histogram(binwidth = 0.1) +
+	xlab('Scaled Temperature') +
+	ggtitle('Scaled Together')
+
+individ_scale <- ggplot(combined, aes(x = temperature_individual, fill = set)) +
+	geom_histogram(binwidth = 0.1) +
+	xlab('Scaled Temperature') +
+	ggtitle('Scaled Individually')
+
+combo_scale + individ_scale
+```
+
+Notice when we scale together, the smaller dataset correctly maintains its position relative to the larger dataset, but when we scale individually, it is centered.
+
+Why is this important? If we are really interested in the species' responses to the "smaller" dataset (i.e., the demographic responses), our coefficient estimates may be biased by the larger dataset simply because of its size.
+
+
+```{r}
+true_beta0 <- -0.2
+true_beta1 <- 1.7
+
+mu <- true_beta0 + true_beta1 * combined$temperature
+sd <- 4
+
+combined$response <- rnorm(n1 + n2, mu, sd)
+
+ggplot(combined, aes(x = temperature, y = response, color = set)) +
+	geom_point()
+```
+
+Let's see if we can correctly estimate the coefficeints using the data that has been scaled together versus individually.
+```{r example_lm}
+lm_combo <- lm(response ~ temperature_combined, data = combined)
+
+lm_combo1 <- lm(response ~ temperature_combined, data = combined, subset = set == 't1')
+lm_combo2 <- lm(response ~ temperature_combined, data = combined, subset = set == 't2')
+
+lm_individ1 <- lm(response ~ temperature_individual, data = combined, subset = set == 't1')
+lm_individ2 <- lm(response ~ temperature_individual, data = combined, subset = set == 't2')
+
+lm_combo <- lm(response ~ temperature, data = combined)
+
+lm_combo1 <- lm(response ~ temperature, data = combined, subset = set == 't1')
+lm_combo2 <- lm(response ~ temperature, data = combined, subset = set == 't2')
+
+lm_individ1 <- lm(response ~ temperature, data = combined, subset = set == 't1')
+lm_individ2 <- lm(response ~ temperature, data = combined, subset = set == 't2')
+
+# combine coefficient estimates into a single data frame
+models <- c('lm_combo', 'lm_combo1', 'lm_combo2', 'lm_individ1', 'lm_individ2')
+for (i in seq_along(models)) {
+
+	model <- get(models[i])
+	coeffs <- coefficients(model)
+
+	if (i == 1) {
+		summary <- rbind(coeffs)
+	} else {
+		summary <- rbind(summary, rbind(coeffs))
+	}
+
+}
+
+rownames(summary) <- models
+summary
+
+# unscale estimates
+ 
+
+```
+
+You can see that when the slope is estimated using the smaller dataset by itself (models `lm_combo2` and `lm_individ2`), parameter estimates are very different from those estimated using the larger dataset or both datasets combined.
+
+```{r scale_correction}
+
+lm_corrected1 <- lm(response ~ temperature)
+
+```
+
+
+*Finis!*

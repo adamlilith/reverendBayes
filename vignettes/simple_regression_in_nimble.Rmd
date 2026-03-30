@@ -3,13 +3,14 @@ title: "Simple Regression in NIMBLE"
 author: "Adam B. Smith"
 date: "`r Sys.Date()`"
 output:
-  html_document: default
-  word_document: default
+  html_notebook:
+    toc: true
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-.libPaths('C:/ecology/Drive/R/libraries') # for Adam's computer only
+# .libPaths('C:/ecology/Drive/R/libraries') # for Adam's computer only
+.libPaths('E:/Adam/Drive/R/libraries') # for Adam's computer only
 ```
 
 This tutorial walks you through how to do a simple  Bayesian linear regression using the **`nimble`** package for **R**. linear regression using the nimble package for R. It also explores basic model diagnostics. We’ll try to estimate the “true” values we use to generate the data using simple linear regression. We will also explores basic model diagnostics. 

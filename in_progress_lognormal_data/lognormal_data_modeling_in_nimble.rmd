@@ -1,0 +1,145 @@
+### MODELING LOGNORMALLY DISTRUBUTED DATA IN NIMBLE
+### Adam B. Smith | Missouri Botanical Garden | adam.smith@mobot.org
+
+### Setup
+```{r}
+library(bayesplot)
+library(nimble)
+
+# Example data
+set.seed(123)
+N <- 200
+x <- rnorm(N)  # Covariate
+beta0_true <- 1
+beta1_true <- 0.5
+sigma_true <- 0.3
+y <- rlnorm(N, meanlog = beta0_true + beta1_true * x, sdlog = sigma_true)
+hist(y, breaks = 30)
+
+constants <- list(N = N, x = x)
+data <- list(y = y)
+inits <- list(beta0 = 0, beta1 = 0, tau = 1)
+
+code <- nimbleCode({
+
+    # Priors
+    beta0 ~ dnorm(0, 0.01)  # Weakly informative normal prior
+    beta1 ~ dnorm(0, 0.01)
+    tau ~ dgamma(0.1, 0.1)  # Precision parameter (inverse of variance)
+
+	# Likelihood
+    for (i in 1:N) {
+        log_mu[i] <- beta0 + beta1 * x[i]  # Linear predictor on log scale
+        y[i] ~ dlnorm(log_mu[i], tau)  # Lognormal likelihood
+    }
+    
+})
+
+model <- nimbleModel(
+	code = code, # our model
+	constants = constants, # constants
+	data = data, # data
+	inits = inits, # initialization values
+	check = TRUE, # any errors?
+	calculate = FALSE
+)
+
+model$initializeInfo()
+model$calculate()
+
+monitors <- c('beta0', 'beta1', 'tau')
+
+conf <- configureMCMC(
+	model,
+	monitors = monitors,
+	print = TRUE,
+	enableWAIC = FALSE
+)
+
+build <- buildMCMC(conf)
+compiled <- compileNimble(model, build, showCompilerOutput = FALSE)
+
+chains <- runMCMC(
+	compiled$build,
+	niter = 11000,
+	nburnin = 1000,
+	thin = 1,
+	nchains = 2,
+	inits = inits,
+	progressBar = TRUE,
+	samplesAsCodaMCMC = TRUE,
+	summary = TRUE,
+	WAIC = FALSE,
+	perChainWAIC = FALSE
+)
+
+mcmc_dens_overlay(chains$samples, pars = c('beta0', 'beta1', 'tau'))
+
+chains$summary$all.chains
+
+
+```
+
+
+### Data creation
+```{r}
+n <- 100
+mu <- 20
+sigma <- 5
+y <- rnorm(n, mu, sigma) # could use rlnorm() and skip log(y) step
+log_y <- log(y)
+
+data <- list(log_y = log_y)
+constants <- list(n = n)
+inits <- list(mu = mean(log_y), sigma = sd(log_y))
+
+code <- nimbleCode({
+	mu ~ dunif(0, 100)
+	sigma ~ dunif(0, 100)
+	for (i in 1:n) {
+		# log_y[i] ~ dlnorm(mu, sigma)
+		log_y[i] ~ dlnorm(meanlog = mu, taulog = 1 / sigma^2)
+	}
+})
+
+model <- nimbleModel(
+	code = code, # our model
+	constants = constants, # constants
+	data = data, # data
+	# inits = inits, # initialization values
+	check = TRUE, # any errors?
+	calculate = FALSE
+)
+
+model$initializeInfo()
+model$calculate()
+
+monitors <- c('mu', 'sigma')
+
+conf <- configureMCMC(
+	model,
+	monitors = monitors,
+	print = TRUE,
+	enableWAIC = FALSE
+)
+
+build <- buildMCMC(conf)
+compiled <- compileNimble(model, build, showCompilerOutput = FALSE)
+
+chains <- runMCMC(
+	compiled$build,
+	niter = 11000,
+	nburnin = 1000,
+	thin = 1,
+	nchains = 2,
+	inits = inits,
+	progressBar = TRUE,
+	samplesAsCodaMCMC = TRUE,
+	summary = TRUE,
+	WAIC = FALSE,
+	perChainWAIC = FALSE
+)
+
+mcmc_dens_overlay(chains$samples, pars = c('mu', 'sigma'))
+
+```

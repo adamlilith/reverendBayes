@@ -1,0 +1,454 @@
+---
+title: "Weighted Regression in NIMBLE"
+author: "Adam B. Smith"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	fig.path = 'man/figures/'
+)
+# .libPaths('C:/ecology/Drive/R/libraries') # for Adam's computer only
+.libPaths('E:/Adam/Drive/R/libraries') # for Adam's computer only
+```
+This tutorial walks you through how to implement weighted (normal) regression and weighted generalized linear regression in **nimble**. We'll use simulated data as the "truth".
+
+What is a weighted regression? The analyst can supply weights to each datum to change how it influences the model. There are any number of reasons to do this: weighting can be used to cancel sampling bias, reflect relative importance, or sample size. (Note that using weights to stand in for sample size can be tricky--it's better to just repeat samples than use weights as a stand-in.)
+
+Importantly, note that weights that vary as a function of the predictor variables generally have little effect on coefficient estimates (but they may for variance estimates). So if you randomly assign weights to observations, it will have little effect on the estimated coefficeints. Rather, to have an effect, weights have to vary with the response values.
+
+## Setup
+```{r, quiet = TRUE}
+library(boot) # used for inverse logit function
+library(nimble) # the workhorse
+library(coda) # for model diagnostics
+library(bayesplot) # for graphing
+```
+
+## Normal linear regression with weights
+We will start with normal linear regression and compare the outcome in **nimble** to that from the **R** function `lm()` with weighting. To do this, we'll create some fake data and assign weights to each datum. If we assigned weights randomly, the estimated coefficients of the weighted model would be very similar to the ones without weights (except for the variance) because there would be no pattern in the weights. Instead, to show how weights affect the outcome, we'll assign them such that each datum's weight increases with the values of `y`.
+
+```{r}
+n <- 200 # number of points to simulate
+beta0 <- -1.2 # intercept
+beta1 <- 1.8 # slope
+beta2 <- -4.3 # quadratic
+sigma <- 0.4
+
+x <- runif(n) # independent variable
+y <- rnorm(n, beta0 + beta1 * x + beta2 * x^2, sigma) # dependent variable
+weights <- runif(n, 0, 2) * (y - min(y))^2
+plot(x, y, cex = weights, main = 'Size ~ weight')
+```
+
+Let's implement two normal linear regresions, one with and one without weights.
+```{r}
+lm_unweighted <- lm(y ~ x + I(x^2))
+lm_weighted <- lm(y ~ x + I(x^2), weights = weights)
+
+# compare estimated coefficeints
+coeffs_true <- c(beta0, beta1, beta2, sigma) # our coefficients
+coeffs_lm_unweighted <- c(coefficients(lm_unweighted), summary(lm_unweighted)$sigma)
+coeffs_lm_weighted <- c(coefficients(lm_weighted), summary(lm_weighted)$sigma)
+
+compare <- do.call(rbind, list(coeffs_true, coeffs_lm_unweighted, coeffs_lm_weighted))
+rownames(compare) <- c('truth', 'lm unweighted', 'lm weighted')
+colnames(compare) <- c('beta0', 'beta1', 'beta2', 'sigma')
+compare
+```
+
+What's going on here? The unweighted model seems to be more accurate than the weighted model. This is because we did not generate the simulated data using weights (i.e., in the `rnorm()` function above)--indeed, I'm not sure how you would generated data so that the values themselves reflect weights. Rather, in the weighted model, we are saying that data with low values of `y` should have less infuence on the regression. As a result, the intercept of the weighted model is higher (because high values of `y` are "pulling" the regression line "up"). Correspondingly, the other coefficeints are also changed. We can see what this does to the model by plotting the regressions.
+```{r}
+x_sorted <- sort(x)
+x_sorted <- data.frame(x = x_sorted)
+trend_unweighted <- predict(lm_unweighted, x_sorted)
+trend_weighted <- predict(lm_weighted, x_sorted)
+plot(x, y, cex = weights, main = 'Size ~ weight')
+lines(x_sorted$x, trend_unweighted, col = 'blue', lwd = 2)
+lines(x_sorted$x, trend_weighted, lty = 'dashed', col = 'red', lwd = 2)
+legend('bottomleft', legend = c('unweighted', 'weighted'), lty = c('solid', 'dashed'), col = c('blue', 'red'), lwd = 2)
+```
+
+Indeed, we can see that the unweighted model is "pulled" toward the points with higher weights.
+
+## `NIMBLE` implementation
+Now, let's implement this in a Bayesian framework using **nimble**. Note that unlike in the frequentest models, having an weight that is equal to 0 can lead to a model for which the likelihood cannot be calculated (to see why, ask: What is the likelihood of a normally distributed value where the variance of the distribution is 0?). The methid we used above to assign weights will yield at least one value that has 0 weight.  Thus, to avoid problems, we'll use a slightly-modified version of the weights. There are several ways to do this. You could add a small value to all weights, or just a small value to any weight that is 0. Here, we'll add to any zero weight a value that's half of the smallest value >0.
+```{r}
+weights_delta <- weights
+     
+delta <- 0.5 * min(weights[weights > 0])
+weights_delta[weights_delta == 0] <- weights_delta[weights_delta == 0] + delta
+weights_delta <- weights_delta + delta
+```
+
+Now, let's create the `data`, `constants`, and initializations lists, write the model, and compile it.
+```{r}
+# setup for models
+data <- list(y = y)
+
+constants_unweighted <- list(
+	x = x,
+	n = n,
+	weights = weights
+)
+
+constants_weighted <- list(
+	x = x,
+	n = n,
+	weights = weights_delta
+)
+
+inits <- list(
+	beta0_hat = 0,
+	beta1_hat = 0,
+	beta2_hat = 0,
+	sigma_hat = 1,
+	y = y
+)
+
+# unweighted model
+code_unweighted <- nimbleCode({
+
+	# priors
+	beta0_hat ~ dnorm(0, sd = 10)
+	beta1_hat ~ dnorm(0, sd = 10)
+	beta2_hat ~ dnorm(0, sd = 10)
+	sigma_hat ~ dunif(0, 10)
+
+	# likelihood
+	for (i in 1:n) {
+		y_mean[i] <- beta0_hat + beta1_hat * x[i] + beta2_hat * x[i]^2
+		y[i] ~ dnorm(y_mean[i], tau = 1 / sigma_hat)
+	}
+
+})
+
+# weighted model
+code_weighted <- nimbleCode({
+
+	# priors
+	beta0_hat ~ dnorm(0, sd = 10)
+	beta1_hat ~ dnorm(0, sd = 10)
+	beta2_hat ~ dnorm(0, sd = 10)
+	sigma_hat ~ dunif(0, 10)
+
+	# likelihood... NB: note the use of "weights" within dnorm()
+	for (i in 1:n) {
+		y_mean[i] <- beta0_hat + beta1_hat * x[i] + beta2_hat * x[i]^2
+		y[i] ~ dnorm(y_mean[i], tau = (1 / sigma_hat) * weights[i])
+	}
+
+})
+
+model_unweighted <- nimbleModel(
+	code = code_unweighted, # our model
+	constants = constants_unweighted, # constants
+	data = data, # data
+	inits = inits, # initialization values
+	check = TRUE, # any errors?
+	calculate = FALSE
+)
+
+model_weighted <- nimbleModel(
+	code = code_weighted, # our model
+	constants = constants_weighted, # constants
+	data = data, # data
+	inits = inits, # initialization values
+	check = TRUE, # any errors?
+	calculate = FALSE
+)
+
+model_unweighted$initializeInfo()
+model_weighted$initializeInfo()
+
+model_unweighted$calculate()
+model_weighted$calculate()
+
+monitors <- c('beta0_hat', 'beta1_hat', 'beta2_hat', 'sigma_hat')
+
+conf_unweighted <- configureMCMC(
+	model_unweighted,
+	monitors = monitors,
+	print = TRUE,
+	enableWAIC = FALSE # Watanabe's AIC... useful, but takes time
+)
+
+conf_weighted <- configureMCMC(
+	model_weighted,
+	monitors = monitors,
+	print = TRUE,
+	enableWAIC = FALSE # Watanabe's AIC... useful, but takes time
+)
+
+build_unweighted <- buildMCMC(conf_unweighted)
+build_weighted <- buildMCMC(conf_weighted)
+
+compiled_unweighted <- compileNimble(model_unweighted, build_unweighted, showCompilerOutput = FALSE)
+compiled_weighted <- compileNimble(model_weighted, build_weighted, showCompilerOutput = FALSE)
+```
+
+Implement MCMC sampling:
+```{r}
+chains_unweighted <- runMCMC(
+	compiled_unweighted$build,
+	niter = 6000, # iterations
+	nburnin = 1000, # burn-in
+	thin = 1, # thinning rate
+	nchains = 4, # number of chains
+	inits = inits, # initialization values
+	progressBar = TRUE,
+	samplesAsCodaMCMC = TRUE, # for using coda package for plots
+	summary = TRUE, # calculate summaries across chains
+	WAIC = FALSE, # Watanabe's AIC... useful, but takes time
+	perChainWAIC = FALSE
+)
+
+chains_weighted <- runMCMC(
+	compiled_weighted$build,
+	niter = 6000, # iterations
+	nburnin = 1000, # burn-in
+	thin = 1, # thinning rate
+	nchains = 4, # number of chains
+	inits = inits, # initialization values
+	progressBar = TRUE,
+	samplesAsCodaMCMC = TRUE, # for using coda package for plots
+	summary = TRUE, # calculate summaries across chains
+	WAIC = FALSE, # Watanabe's AIC... useful, but takes time
+	perChainWAIC = FALSE
+)
+```
+
+Let's compare our coefficient estimates. To do that, we'll compile them into a table.
+```{r}
+coeffs_bayes_unweighted <- c(
+	beta0_hat = chains_unweighted$summary$all.chains['beta0_hat', 'Mean'],
+	beta1_hat = chains_unweighted$summary$all.chains['beta1_hat', 'Mean'],
+	beta2_hat = chains_unweighted$summary$all.chains['beta2_hat', 'Mean'],
+	sigma_hat = chains_unweighted$summary$all.chains['sigma_hat', 'Mean']
+)
+
+coeffs_bayes_weighted <- c(
+	beta0_hat = chains_weighted$summary$all.chains['beta0_hat', 'Mean'],
+	beta1_hat = chains_weighted$summary$all.chains['beta1_hat', 'Mean'],
+	beta2_hat = chains_weighted$summary$all.chains['beta2_hat', 'Mean'],
+	sigma_hat = chains_weighted$summary$all.chains['sigma_hat', 'Mean']
+)
+
+compare <- do.call(rbind, list(coeffs_true, coeffs_lm_unweighted, coeffs_bayes_unweighted, coeffs_lm_weighted, coeffs_bayes_weighted))
+rownames(compare) <- c('truth', 'lm unweighted', 'bayes unweighted', 'lm weighted', 'bayes weighted')
+colnames(compare) <- c('beta0', 'beta1', 'beta2', 'sigma')
+compare
+```
+
+We can see that the frequentist and Bayesian coefficients are comparable.
+
+## Weighted generalized linear models: Binary (Bernoulli) models
+Implementing weighted generalized linear models (GLMs) for non-normal data is very similar to the above, so long as the response is ultimatley the function of a linear model with a normal error distribution (it's possible to do weighted regression with other distributions, too, but we'll not explore that here).
+
+Again, let's make up some data. We'll be assuming the response is binary (1s and 0s). Note that binary values are not very information-rich, so to help the models estimate the coefficients, we'll use a larger sample size than we have been.
+```{r}
+n <- 5000 # number of points to simulate
+beta0 <- 2.5 # intercept
+beta1 <- 1.8 # slope
+beta2 <- -3.3 # quadratic
+
+x <- runif(n, -1, 1) # independent variable, NB we approximatley center the variable!
+prob <- 1 / (1 + exp(-(beta0 + beta1 * x + beta2 * x^2)))
+y <- rbinom(n, size = 1, prob = prob)
+
+weights <- ifelse(y == 0, abs(rnorm(n, 0, 100)), abs(rnorm(n, 0, 10))) # weighting 0's higher
+
+cols <- colorRampPalette(c('black', 'green'))
+cols <- cols(n)
+cols <- cols[rank(weights)]
+pch <- ifelse(y == 0, 1, 3)
+plot(x, y, xlim = c(-1, 1), ylim = c(0, 1), col = cols, pch = pch, main = 'green ==> higher weight')
+plot(weights ~ prob, pch = pch, main = 'Weight decreases with probability of presence')
+legend('topleft', legend = c('1', '0'), pch = c(3, 1))
+```
+
+As before, we'll implement two models using a frequentist framework, one without and one with weighting.
+```{r}
+start <- c(beta0, beta1, beta2)
+glm_unweighted <- glm(y ~ x + I(x^2), start = start, family = binomial)
+glm_weighted <- glm(y ~ x + I(x^2), start = start, family = binomial, weights = weights)
+
+# compare estimated coefficeints
+coeffs_true <- c(beta0, beta1, beta2) # our coefficients
+coeffs_glm_unweighted <- coefficients(glm_unweighted)
+coeffs_glm_weighted <- coefficients(glm_weighted)
+
+compare <- do.call(rbind, list(coeffs_true, coeffs_glm_unweighted, coeffs_glm_weighted))
+colnames(compare) <- c('beta0', 'beta1', 'beta2')
+rownames(compare) <- c('real', 'unweighted', 'weighted')
+compare
+```
+
+Finally, let's plot the model means.
+```{r}
+x_sorted <- sort(x)
+x_sorted <- data.frame(x = x_sorted)
+trend_unweighted <- predict(glm_unweighted, x_sorted, type = 'response')
+trend_weighted <- predict(glm_weighted, x_sorted, type = 'response')
+plot(x, y, xlim = c(-1, 1), ylim = c(0, 1), col = cols, pch = pch, main = 'green ==> higher weight')
+lines(x_sorted$x, trend_unweighted, col = 'blue', lwd = 2)
+lines(x_sorted$x, trend_weighted, lty = 'dashed', col = 'red', lwd = 2)
+legend('left', legend = c('unweighted', 'weighted'), lty = c('solid', 'dashed'), col = c('blue', 'red'), lwd = 2)
+```
+
+Up-weighting the `y` values that are 0's pulls the estimate "down".
+
+Now, let's implement the same in **nimble**.
+```{r}
+# setup for models
+data <- list(y = y)
+
+constants <- list(
+	x = x,
+	n = n,
+	weights = weights
+)
+
+inits <- list(
+	beta0_hat = 0,
+	beta1_hat = 0,
+	beta2_hat = 0,
+	sigma_hat = 1,
+	y = y
+)
+
+# unweighted model
+code_unweighted <- nimbleCode({
+
+	# priors
+	beta0_hat ~ dnorm(0, sd = 10)
+	beta1_hat ~ dnorm(0, sd = 10)
+	beta2_hat ~ dnorm(0, sd = 10)
+	sigma_hat ~ dunif(0, 10)
+
+	# likelihood
+	for (i in 1:n) {
+		logit(theta[i]) <- beta0_hat + beta1_hat * x[i] + beta2_hat * x[i]^2
+		y[i] ~ dbern(theta[i])
+	}
+
+})
+
+# weighted model
+code_weighted <- nimbleCode({
+
+	# priors
+	beta0_hat ~ dnorm(0, sd = 10)
+	beta1_hat ~ dnorm(0, sd = 10)
+	beta2_hat ~ dnorm(0, sd = 10)
+	sigma_hat ~ dunif(0, 10)
+
+	# likelihood
+	for (i in 1:n) {
+		logit(theta[i]) <- beta0_hat + beta1_hat * x[i] + beta2_hat * x[i]^2
+		y[i] ~ dbern(theta[i])
+	}
+
+})
+
+model_unweighted <- nimbleModel(
+	code = code_unweighted, # our model
+	constants = constants, # constants
+	data = data, # data
+	inits = inits, # initialization values
+	check = TRUE, # any errors?
+	calculate = FALSE
+)
+
+model_weighted <- nimbleModel(
+	code = code_weighted, # our model
+	constants = constants, # constants
+	data = data, # data
+	inits = inits, # initialization values
+	check = TRUE, # any errors?
+	calculate = FALSE
+)
+
+model_unweighted$initializeInfo()
+model_weighted$initializeInfo()
+
+model_unweighted$calculate()
+model_weighted$calculate()
+
+monitors <- c('beta0_hat', 'beta1_hat', 'beta2_hat')
+
+conf_unweighted <- configureMCMC(
+	model_unweighted,
+	monitors = monitors,
+	print = TRUE,
+	enableWAIC = FALSE # Watanabe's AIC... useful, but takes time
+)
+
+conf_weighted <- configureMCMC(
+	model_weighted,
+	monitors = monitors,
+	print = TRUE,
+	enableWAIC = FALSE # Watanabe's AIC... useful, but takes time
+)
+
+build_unweighted <- buildMCMC(conf_unweighted)
+build_weighted <- buildMCMC(conf_weighted)
+
+compiled_unweighted <- compileNimble(model_unweighted, build_unweighted, showCompilerOutput = FALSE)
+compiled_weighted <- compileNimble(model_weighted, build_weighted, showCompilerOutput = FALSE)
+```
+```{r, warning = FALSE}
+chains_unweighted <- runMCMC(
+	compiled_unweighted$build,
+	niter = 6000, # iterations
+	nburnin = 1000, # burn-in
+	thin = 1, # thinning rate
+	nchains = 4, # numbe of chains
+	inits = inits, # initialization values
+	progressBar = TRUE,
+	samplesAsCodaMCMC = TRUE, # for using coda package for plots
+	summary = TRUE, # calculate summaries across chains
+	WAIC = FALSE, # Watanabe's AIC... useful, but takes time
+	perChainWAIC = FALSE
+)
+
+chains_weighted <- runMCMC(
+	compiled_weighted$build,
+	niter = 6000, # iterations
+	nburnin = 1000, # burn-in
+	thin = 1, # thinning rate
+	nchains = 4, # numbe of chains
+	inits = inits, # initialization values
+	progressBar = TRUE,
+	samplesAsCodaMCMC = TRUE, # for using coda package for plots
+	summary = TRUE, # calculate summaries across chains
+	WAIC = FALSE, # Watanabe's AIC... useful, but takes time
+	perChainWAIC = FALSE
+)
+```
+
+Let's compare our coefficient estimates:
+```{r}
+coeffs_bayes_unweighted <- c(
+	beta0_hat = chains_unweighted$summary$all.chains['beta0_hat', 'Mean'],
+	beta1_hat = chains_unweighted$summary$all.chains['beta1_hat', 'Mean'],
+	beta2_hat = chains_unweighted$summary$all.chains['beta2_hat', 'Mean']
+)
+
+coeffs_bayes_weighted <- c(
+	beta0_hat = chains_weighted$summary$all.chains['beta0_hat', 'Mean'],
+	beta1_hat = chains_weighted$summary$all.chains['beta1_hat', 'Mean'],
+	beta2_hat = chains_weighted$summary$all.chains['beta2_hat', 'Mean']
+)
+
+compare <- do.call(rbind, list(coeffs_true, coeffs_glm_unweighted, coeffs_bayes_unweighted, coeffs_glm_weighted, coeffs_bayes_weighted))
+rownames(compare) <- c('real', 'glm unweighted', 'bayes unweighted', 'glm weighted', 'bayes weighted')
+colnames(compare) <- c('beta0', 'beta1', 'beta2')
+compare
+```
+
+*Finis!*

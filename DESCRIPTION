@@ -1,0 +1,32 @@
+Package: enmSdmX
+Type: Package
+Title: reverendBayes
+Version: 1.1.7
+Date: 2024-08-02
+Authors@R: 
+	c(
+		person(
+			given = 'Adam B.',
+			family = 'Smith',
+			role = c('cre', 'aut'),
+			email = 'adam.smith@mobot.org',
+			comment = c(ORCID = '0000-0002-6420-1659')
+		)
+	)
+Description: Tutorials for Bayesian model-building with 'nimble' (https://r-nimble.org/).
+Depends:
+	R (>= 4.0.0)
+Imports:
+	AICcmodavg,
+	bayesplot,
+	boot,
+	coda,
+	nimble,
+	rmarkdown
+LazyData: true
+LazyLoad: yes
+URL: https://github.com/adamlilith/reverendBayes, https://adamlilith.github.io/reverendBayes/
+BugReports: https://github.com/adamlilith/reverendBayes/issues
+Encoding: UTF-8
+License: MIT + file LICENSE
+RoxygenNote: 7.3.1

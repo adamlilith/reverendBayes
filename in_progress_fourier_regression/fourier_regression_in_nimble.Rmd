@@ -1,0 +1,374 @@
+---
+title: "Fourier Regression in NIMBLE"
+author: "Adam B. Smith"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+    toc: true
+  html_document: default
+    toc: true
+---
+
+```{r setup, include=FALSE}`r ''`
+knitr::opts_chunk$set(
+	fig.path = "man/figures/",
+	echo = TRUE
+)
+```
+
+Fourier regression uses a set of sine waves to approximate an unknown function. Since sine waves are cyclic, Fourier regression is best used for data that are cyclic (e.g., temperature across a series of days). However, any smooth function can be approximated to an arbitrary degree using a set of sine waves, though they will likely extrapolate wildly outside the range of the data.  Here, I will demonstrate Fourier regression of non-cyclic data in `nimble`.
+
+## Basic Fourier regression
+
+```{r, quiet = TRUE}
+library(AICcmodavg) # used for function AICc()
+library(bayesplot) # for graphing
+library(coda) # for model diagnostics
+library(boot) # used for inverse logit function
+library(nimble) # the workhorse
+```
+
+Create some fake data:
+```{r}
+beta0 <- -0.4
+beta1 <- 0.6
+beta2 <- -1.4
+beta3 <- 4.7
+sigma <- 0.9
+
+n <- 1000 # sample size
+x <- runif(n, -1, 1) # predictor variable
+x <- sort(x) # sort to help in plotting later... no effect on model
+y <- beta0 + beta1 * x + beta2 * x^2 + beta3 * x^3 + rnorm(n, 0, sigma) +
+	ifelse(x > 0.5, -17, 0)
+
+plot(x, y)
+```
+
+Our fake data is very non-smooth!
+
+Fourier regression uses a seris of sine waves with different wavelengths (frequencies). In the models below, we'll use 20 sine waves. Let's see what the look like.
+
+```{r}
+min_x <- min(x)
+max_x <- max(x)
+range_x <- max_x - min_x
+
+n_harmonics <- 20
+harmonics <- 1:n_harmonics
+
+sines <- cosines <- matrix(NA_real_, nrow = n, ncol = n_harmonics)
+
+for (i in 1:n_harmonics) {
+	sines[ , i] <- sin((2 * pi * harmonics[i] * x) / range_x)
+	cosines[ , i] <- cos((2 * pi * harmonics[i] * x) / range_x)
+}
+
+colnames(sines) <- paste0('sine_', harmonics)
+colnames(cosines) <- paste0('cosine_', harmonics)
+
+par(mfrow = c(2, 4))
+wl <- c(1, 2, 3, 4, 8, 15, 20)
+for (i in wl) {
+	plot(x, sines[ , i], col = 'red', pch = 16, type = 'l', main = harmonics[i])
+	lines(x, cosines[ , i], col = 'blue', pch = 16, type = 'l', main = harmonics[i])
+}
+```
+
+Of the 20 sine waves we'll be using, these are the ones with of 1, 2, 3, 4, 8, 15, and 20 wavelengths across the range of the data (which spans (-1, 1)).
+
+## Frequentist Fourier regression
+Now, let's use a frequentist approach to approximate the data. We will compare a Fourier regression to a model that has nearly the same form used to generate the data (the "pseudogenerative" model). This pseudogenerative model does not include the abrupt break the data has, but it will be close. The Fourier regression uses 20 sine waves.
+
+```{r}
+# setup for Fourier model
+sine_cosine_names <- c(colnames(sines), colnames(cosines))
+xy_matrix <- cbind(y, x)
+
+data <- cbind(xy_matrix, sines, cosines)
+data <- as.data.frame(data)
+
+# Fourier model
+form <- paste0('y ~ 1 + ', paste(sine_cosine_names, collapse = ' + '))
+lm_fourier <- lm(form, data = data)
+
+# linear model that approximates the process we used to generate the data
+lm_pseudogenerative <- lm(y ~ 1 + x + I(x^2) + I(x^3), data = data)
+```
+
+Let's see how the models compare:
+```{r}
+summary(lm_pseudogenerative)
+summary(lm_fourier)
+
+data <- data[order(data$x), ]
+
+pred_pseudogenerative <- predict(lm_pseudogenerative, data)
+pred_fourier <- predict(lm_fourier, data)
+
+par(mfrow = c(1, 2))
+plot(x, y, main = 'Pseudogenerative model')
+lines(x, pred_pseudogenerative, col = 'red')
+
+plot(x, y, main = 'Fourier model')
+lines(x, pred_fourier, col = 'red')
+```
+
+The Fourier models does better at capturing the overall trend, though the smaller sine waves also impart bias in the fine-scale structure.
+
+## Redo, but with more waves
+Let's see how adding sine waves increases the fit (and overfit) of the model. We'll explore models with 1 to `r 2^7` sine waves, and identify teh most parsimonious model using AICc.
+```{r}
+n_harmonics <- 2^(0:7)
+aicc <- numeric()
+par(mfrow = c(2, 4))
+
+for (n_harmonic in n_harmonics) {
+
+	harmonic <- 1:n_harmonic
+	n_waves <- length(harmonic)
+
+	sines <- cosines <- matrix(NA_real_, nrow = n, ncol = n_waves)
+
+	for (i in 1:n_waves) {
+		sines[ , i] <- sin((2 * pi * harmonic[i] * x) / range_x)
+		cosines[ , i] <- cos((2 * pi * harmonic[i] * x) / range_x)
+	}
+	colnames(sines) <- paste0('sine_', harmonic)
+	colnames(cosines) <- paste0('cosine_', harmonic)
+
+	sine_cosine_names <- c(colnames(sines), colnames(cosines))
+	form <- paste0('y ~ 1 + ', paste(sine_cosine_names, collapse = ' + '))
+	xy_matrix <- cbind(y, x)
+
+	data <- cbind(xy_matrix, sines, cosines)
+	data <- as.data.frame(data)
+	data <- data[order(data$x), ] # helps with plotting
+
+	lm_fourier <- lm(form, data = data)
+
+	pred_sines <- predict(lm_fourier, data)
+
+	plot(x, y, main = paste('Number of waves: ', n_harmonic))
+	lines(x, pred_sines, col = 'red')
+
+	aicc <- c(aicc, AICc(lm_fourier))
+
+} 
+```
+
+```{r}
+min_aicc <- which.min(aicc)
+aiccs <- data.frame(n_harmonic = n_harmonics, AICc = aicc)
+
+plot(aiccs)
+points(aiccs$n_harmonic[min_aicc], aiccs$AIC[min_aicc], pch = 16, col = 'red')
+```
+
+
+### NIMBLE: NEEDS COSINES ADDED!!!
+```{r}
+n_waves <- 10
+sines <- matrix(NA_real_, nrow = n, ncol = n_waves)
+
+for (i in 1:n_waves) {
+	sines[ , i] <- sin(x_rescale * freq[i])
+}
+colnames(sines) <- paste0('freq_', freq[1:n_waves] / 2)
+
+ones <- matrix(1, nrow = n, ncol = 1)
+x_matrix <- cbind(ones, sines)
+
+n_betas <- ncol(x_matrix)
+
+data <- list(
+	y = y
+)
+
+constants <- list(
+	n = n,
+	n_betas = n_betas,
+	x_matrix = x_matrix
+)
+
+inits <- list(
+	beta_hat = rep(0, n_betas),
+	tau_hat = 1
+)
+
+code <- nimbleCode({
+
+	# priors
+	for (i in 1:n_betas) {
+		beta_hat[i] ~ dnorm(0, tau = 0.01)
+	}
+
+	# likelihood
+	for (i in 1:n) {
+		y[i] ~ dnorm(mu_hat[i], tau = tau_hat)
+		mu_hat[i] <- inprod(beta_hat[1:n_betas], x_matrix[i, 1:n_betas])
+
+	}
+
+})
+
+# black magic
+model <- nimbleModel(
+	code = code, # our model
+	constants = constants, # constants
+	data = data, # data
+	inits = inits, # initialization values
+	check = TRUE, # any errors?
+	calculate = FALSE
+)
+
+model$initializeInfo()
+model$calculate()
+
+# configure
+monitors <- c('beta_hat', 'tau_hat')
+conf <- configureMCMC(
+	model,
+	monitors = monitors,
+	print = TRUE,
+	enableWAIC = FALSE # Watanabe's AIC... useful, but takes time
+)
+
+build <- buildMCMC(conf)
+
+# compile
+compiled <- compileNimble(model, build, showCompilerOutput = FALSE)
+
+# MCMC
+chains <- runMCMC(
+	compiled$build,
+	niter = 6000, # iterations
+	nburnin = 1000, # burn-in
+	thin = 1, # thinning rate
+	nchains = 4, # number of chains
+	inits = inits, # initialization values
+	progressBar = TRUE,
+	samplesAsCodaMCMC = TRUE, # for using coda package for plots
+	summary = TRUE, # calculate summaries across chains
+	WAIC = FALSE, # Watanabe's AIC... useful, but takes time
+	perChainWAIC = FALSE
+)
+
+# gather mean of coefficient estimates
+beta_hats <- rep(NA_real_, n_betas)
+for (i in 1:n) {
+	beta_hat <- paste0('beta_hat[', i, ']')
+	beta_hats[i] <- chains$summary$all.chains[beta_hat, 'Mean']
+}
+
+# plot
+plot(x, y)
+y_hat <- x_matrix %*% matrix(beta_hats, ncol = 1)
+lines(x, y_hat, col = 'red')
+legend('bottomright', legend = c('data', 'prediction'), pch = c(1, NA), lwd = c(NA, 1), col = c('black', 'red'))
+```
+
+# Combining Fourier regression with non-trigonometric variables
+```{r}
+beta0 <- -0.4
+beta1 <- 0.6
+beta2 <- 2.4
+beta3 <- 4.7
+sigma <- 0.9
+
+n <- 200 # sample size
+x <- runif(n, -1, 1) # predictor variable
+x <- sort(x) # sort to help in plotting later... no effect on model
+y <- beta0 + beta1 * x + beta2 * x^2 + beta3 * x^3 + rnorm(n, 0, sigma)
+
+plot(x, y)
+```
+
+```{r}
+min_x <- min(x)
+max_x <- max(x)
+range_x <- max_x - min_x
+
+n_harmonics <- 20
+harmonics <- 1:n_harmonics
+
+sines <- cosines <- matrix(NA_real_, nrow = n, ncol = n_harmonics)
+
+for (i in 1:n_harmonics) {
+	sines[ , i] <- sin((2 * pi * harmonics[i] * x) / range_x)
+	cosines[ , i] <- cos((2 * pi * harmonics[i] * x) / range_x)
+}
+
+colnames(sines) <- paste0('sine_', harmonics)
+colnames(cosines) <- paste0('cosine_', harmonics)
+
+xy_matrix <- cbind(y, x)
+
+data <- cbind(xy_matrix, sines, cosines)
+data <- as.data.frame(data)
+```
+
+```{r}
+form_generative <- 'x + I(x^2) + I(x^3)'
+form_generative_missing <- 'x + I(x^2)'
+form_sines <- paste(colnames(sines), collapse = ' + ')
+
+form_generative_sines <- paste0('y ~ 1 + ', form_generative, ' + ', form_sines)
+form_generative_missing_sines <- paste0('y ~ 1 + ', form_generative_missing, ' + ', form_sines)
+form_generative <- paste0('y ~ 1 + ', form_generative)
+form_generative_missing <- paste0('y ~ 1 + ', form_generative_missing)
+form_sines <- paste0('y ~ 1 + ', form_sines)
+
+lm_generative <- lm(as.formula(form_generative), data = data)
+lm_generative_missing <- lm(as.formula(form_generative_missing), data = data)
+lm_sines <- lm(as.formula(form_sines), data = data)
+lm_generative_fourier <- lm(as.formula(form_generative_sines), data = data)
+lm_generative_missing_fourier <- lm(as.formula(form_generative_missing_sines), data = data)
+```
+
+```{r}
+model_coeffs <- c('(Intercept)', 'x', 'I(x^2)', 'I(x^3)')
+coeffs <- matrix(c(
+		c(beta0, beta1, beta2, beta3),
+		coefficients(lm_generative)[model_coeffs],
+		coefficients(lm_generative_missing)[model_coeffs],
+		coefficients(lm_generative_fourier)[model_coeffs],
+		coefficients(lm_generative_missing_fourier)[model_coeffs]
+	), byrow = TRUE, ncol = 4
+)
+
+colnames(coeffs) <- model_coeffs
+rownames(coeffs) <- c('real', 'generative', 'generative missing x^3', 'generative fourier', 'generative missing x^3 with fourier')
+coeffs
+```
+
+Note that that for the models combining `x` and fourier analysis, the coefficients for the `x` terms are very different from the "truth", sometimes by a lot! Let's try to improve this by choosing orthogonal sine and cosine components.
+
+```{r}
+n_harmonics <- 20
+harmonics <- 1:n_harmonics
+
+x_grad <- seq(min_x, max_x, length.out = 10000)
+
+sines <- cosines <- matrix(NA_real_, nrow = 10000, ncol = n_harmonics)
+
+for (i in 1:n_harmonics) {
+	sines[ , i] <- sin((2 * pi * harmonics[i] * x_grad) / range_x)
+	cosines[ , i] <- cos((2 * pi * harmonics[i] * x_grad) / range_x)
+}
+
+colnames(sines) <- paste0('sine_', harmonics)
+colnames(cosines) <- paste0('cosine_', harmonics)
+
+integral <- data.frame()
+for (i in harmonics) {
+	for (j in harmonics) {
+		integral[i, j] <- sum(sines[ , paste0('sine_', i)] * cosines[ , paste0('cosine_', i)])
+	}
+}
+colnames(integral) <- colnames(cosines)
+rownames(integral) <- colnames(sines)
+
+
+```
+
